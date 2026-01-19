@@ -1,0 +1,27 @@
+{
+  "name": "smarthiker-server",
+  "version": "1.0.0",
+  "description": "Real-time hiking tracker server with WebSocket support",
+  "main": "backend_server.js",
+  "scripts": {
+    "start": "node backend_server.js",
+    "dev": "nodemon backend_server.js"
+  },
+  "keywords": [
+    "hiking",
+    "gps",
+    "tracking",
+    "websocket",
+    "real-time"
+  ],
+  "author": "SmartHiker Team",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

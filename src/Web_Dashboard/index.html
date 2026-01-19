@@ -236,9 +236,40 @@
         <div class="header-top">
           <div class="logo-title">
             <div class="logo-icon"><i class="fas fa-mountain"></i></div>
-            <div class="title-section"><h1>MOUNTAIN TRACKER</h1><p>Live Hiking Activity - Strava Style</p></div>
+            <div class="title-section"><h1 id="hiker-name">MOUNTAIN TRACKER</h1><p>Live Hiking Activity - Strava Style</p></div>
           </div>
           <div class="live-indicator"><div class="live-dot"></div><span class="live-text">RECORDING</span></div>
+        </div>
+        
+        <!-- HIKER SELECTOR DROPDOWN -->
+        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <label for="hiker-select" style="font-size: clamp(11px, 3vw, 13px); font-weight: 600; color: var(--text-light); display: flex; align-items: center; gap: 6px;">
+            <i class="fas fa-users"></i> Pilih Pendaki:
+          </label>
+          <select id="hiker-select" style="
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--text-light);
+            border: 1px solid rgba(252, 76, 2, 0.3);
+            border-radius: 8px;
+            padding: 6px 12px;
+            font-size: clamp(11px, 3vw, 13px);
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            outline: none;
+          ">
+            <option value="">-- Tunggu Pendaki Terdaftar --</option>
+          </select>
+          <span id="active-hiker-badge" style="
+            background: rgba(252, 76, 2, 0.3);
+            color: var(--strava-orange);
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: clamp(10px, 2.5vw, 11px);
+            font-weight: 700;
+            border: 1px solid rgba(252, 76, 2, 0.4);
+            display: none;
+          ">AKTIF</span>
         </div>
         <div class="stats-grid">
           <div class="stat-card"><div class="stat-label"><i class="fas fa-route"></i> JARAK</div><span class="stat-value" id="distance-val">0.00 km</span></div>
@@ -298,11 +329,15 @@
 
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
-    // Analytics is initialized but not used in core logic to prevent errors
     const analytics = getAnalytics(app);
 
     // --- LOGIC LEAFLET & VISUALISASI (STRAVA STYLE) ---
-    const outdoorMap = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, attribution: '© OpenTopoMap' });
+    // Deteksi apakah online atau offline untuk memilih map source
+    const mapUrl = navigator.onLine ? 
+                   'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png' : 
+                   'tiles/{z}/{x}/{y}.png';
+    
+    const outdoorMap = L.tileLayer(mapUrl, { maxZoom: 17, attribution: '© OpenTopoMap', errorTileUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' });
     const stravaHeatmap = L.tileLayer('https://heatmap-external-{s}.strava.com/tiles-auth/ride/hot/{z}/{x}/{y}.png?px=256', { maxZoom: 17, attribution: '© Strava Heatmap', opacity: 0.7 });
     const satelliteMap = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: '© Esri' });
 
@@ -311,16 +346,28 @@
     L.control.layers({ "Peta Topografi": outdoorMap, "Satelit": satelliteMap }, { "Strava Heatmap": stravaHeatmap }, { position: 'topright', collapsed: true }).addTo(map);
 
     const stravaMarkerIcon = L.divIcon({ className: 'strava-marker', iconSize: [32, 32], iconAnchor: [16, 32], popupAnchor: [0, -32] });
-    let pathLayer = L.layerGroup().addTo(map);
-    let markerLayer = L.layerGroup().addTo(map);
-    let marker, pathPolyline;
     
-    let trackingData = {
-      startTime: null, lastPosition: null, totalDistance: 0, positions: [], elevations: [], lastUpdateTime: null,
-      isConnected: true, targetDistance: 10, totalElevationGain: 0, minElevation: Infinity, maxElevation: -Infinity,
-      pathVisible: true, markerVisible: true, elevationVisible: true
+    // --- MULTI-USER TRACKING DATA ---
+    let hikers = {}; // Objek untuk menyimpan data semua pendaki
+    let activeHikerId = null; // ID pendaki yang sedang dipilih
+    let pathLayers = {}; // Menyimpan polyline untuk setiap pendaki
+    let markerLayers = {}; // Menyimpan marker untuk setiap pendaki
+    
+    // Warna berbeda untuk setiap pendaki
+    const hikerColors = {
+      'bella': '#FC4C02',
+      'budi': '#1E88E5',
+      'rina': '#43A047',
+      'ricky': '#FB8C00',
+      'default': '#FC4C02'
     };
 
+    function getHikerColor(hikerName) {
+      const name = hikerName.toLowerCase();
+      return hikerColors[name] || hikerColors['default'];
+    }
+    
+    // --- FUNGSI-FUNGSI UTILITY ---
     function calculateDistance(lat1, lon1, lat2, lon2) {
       const R = 6371; const dLat = (lat2 - lat1) * Math.PI / 180; const dLon = (lon2 - lon1) * Math.PI / 180;
       const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
@@ -328,7 +375,6 @@
     }
     
     function getElevation(lat, lon) { 
-        // Simulasi elevasi agar grafik tidak kosong saat testing
         const base = 500; const variation = Math.sin(lat * 100) * 200 + Math.cos(lon * 100) * 150; 
         return Math.max(100, base + variation + Math.random() * 20); 
     }
@@ -340,130 +386,301 @@
     
     function formatDistance(km) { return km < 1 ? `${(km * 1000).toFixed(0)} m` : `${km.toFixed(2)} km`; }
 
-    function updateDisplay() {
-      if(trackingData.startTime) {
-        const dur = Math.floor((new Date() - trackingData.startTime) / 1000);
+    function updateDashboardStats(hikerName) {
+      if(!hikers[hikerName]) return;
+      const data = hikers[hikerName];
+      
+      document.getElementById('hiker-name').textContent = hikerName.toUpperCase();
+      document.getElementById('position-val').textContent = `${data.lastPosition?.lat?.toFixed(5) || '0'}, ${data.lastPosition?.lon?.toFixed(5) || '0'}`;
+      document.getElementById('distance-val').textContent = formatDistance(data.totalDistance);
+      document.getElementById('current-distance').textContent = formatDistance(data.totalDistance);
+      document.getElementById('elevation-val').textContent = `${Math.round(data.totalElevationGain)} m`;
+      document.getElementById('total-elevation').textContent = `+${Math.round(data.totalElevationGain)} m`;
+      document.getElementById('min-elevation').textContent = `${Math.round(data.minElevation === Infinity ? 0 : data.minElevation)} m`;
+      document.getElementById('max-elevation').textContent = `${Math.round(data.maxElevation === -Infinity ? 0 : data.maxElevation)} m`;
+      
+      if(data.elevations.length > 0) {
+        document.getElementById('avg-elevation').textContent = `${Math.round(data.elevations.reduce((a,b)=>a+b,0)/data.elevations.length)} m`;
+      }
+      
+      if(data.startTime) {
+        const dur = Math.floor((new Date() - data.startTime) / 1000);
         document.getElementById('duration-val').textContent = formatDuration(dur);
+        document.getElementById('start-time').textContent = data.startTime.toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'});
+        
         const hours = dur / 3600;
-        if(trackingData.totalDistance > 0) document.getElementById('avg-speed').textContent = `${(trackingData.totalDistance/hours).toFixed(1)} km/jam`;
-        const cals = Math.round((trackingData.totalDistance * 60) + ((trackingData.totalElevationGain/100)*100));
+        if(data.totalDistance > 0 && hours > 0) {
+          document.getElementById('avg-speed').textContent = `${(data.totalDistance/hours).toFixed(1)} km/jam`;
+        }
+        const cals = Math.round((data.totalDistance * 60) + ((data.totalElevationGain/100)*100));
         document.getElementById('calories-val').textContent = `${cals} kcal`;
       }
-      document.getElementById('distance-val').textContent = formatDistance(trackingData.totalDistance);
-      document.getElementById('current-distance').textContent = formatDistance(trackingData.totalDistance);
-      document.getElementById('target-distance').textContent = `${trackingData.targetDistance} km`;
-      const pct = Math.min((trackingData.totalDistance/trackingData.targetDistance)*100, 100);
+      
+      const pct = Math.min((data.totalDistance/data.targetDistance)*100, 100);
       document.getElementById('distance-percentage').textContent = `${pct.toFixed(1)}%`;
       document.getElementById('distance-progress-bar').style.width = `${pct}%`;
       
-      document.getElementById('elevation-val').textContent = `${Math.round(trackingData.totalElevationGain)} m`;
-      document.getElementById('total-elevation').textContent = `+${Math.round(trackingData.totalElevationGain)} m`;
-      document.getElementById('min-elevation').textContent = `${Math.round(trackingData.minElevation === Infinity ? 0 : trackingData.minElevation)} m`;
-      document.getElementById('max-elevation').textContent = `${Math.round(trackingData.maxElevation === -Infinity ? 0 : trackingData.maxElevation)} m`;
-      if(trackingData.elevations.length > 0) document.getElementById('avg-elevation').textContent = `${Math.round(trackingData.elevations.reduce((a,b)=>a+b,0)/trackingData.elevations.length)} m`;
-      drawElevationChart();
+      drawElevationChart(hikerName);
     }
 
-    function drawElevationChart() {
-      const canvas = document.getElementById('elevation-chart'); if(!canvas) return;
-      const ctx = canvas.getContext('2d'); const els = trackingData.elevations.slice(-50);
-      if(els.length < 2) return;
-      ctx.clearRect(0,0,canvas.width,canvas.height); canvas.width = canvas.offsetWidth; canvas.height = canvas.offsetHeight;
-      const min = Math.min(...els); const max = Math.max(...els); const range = max - min || 1;
+    function drawElevationChart(hikerName) {
+      if(!hikers[hikerName]) return;
+      const canvas = document.getElementById('elevation-chart'); 
+      if(!canvas) return;
       
-      ctx.beginPath(); ctx.moveTo(0, canvas.height);
-      els.forEach((e,i) => { ctx.lineTo((i/(els.length-1))*canvas.width, canvas.height - ((e-min)/range)*canvas.height*0.8); });
-      ctx.lineTo(canvas.width, canvas.height); ctx.closePath();
-      const grad = ctx.createLinearGradient(0,0,0,canvas.height); grad.addColorStop(0, 'rgba(252,76,2,0.3)'); grad.addColorStop(1, 'rgba(252,76,2,0.05)');
-      ctx.fillStyle = grad; ctx.fill();
+      const ctx = canvas.getContext('2d'); 
+      const els = hikers[hikerName].elevations.slice(-50);
+      
+      if(els.length < 2) return;
+      
+      ctx.clearRect(0,0,canvas.width,canvas.height); 
+      canvas.width = canvas.offsetWidth; 
+      canvas.height = canvas.offsetHeight;
+      
+      const min = Math.min(...els); 
+      const max = Math.max(...els); 
+      const range = max - min || 1;
+      
+      ctx.beginPath(); 
+      ctx.moveTo(0, canvas.height);
+      els.forEach((e,i) => { 
+        ctx.lineTo((i/(els.length-1))*canvas.width, canvas.height - ((e-min)/range)*canvas.height*0.8); 
+      });
+      ctx.lineTo(canvas.width, canvas.height); 
+      ctx.closePath();
+      
+      const grad = ctx.createLinearGradient(0,0,0,canvas.height); 
+      grad.addColorStop(0, 'rgba(252,76,2,0.3)'); 
+      grad.addColorStop(1, 'rgba(252,76,2,0.05)');
+      ctx.fillStyle = grad; 
+      ctx.fill();
       
       ctx.beginPath();
       els.forEach((e,i) => { 
-          const x = (i/(els.length-1))*canvas.width; const y = canvas.height - ((e-min)/range)*canvas.height*0.8;
-          i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y); 
+        const x = (i/(els.length-1))*canvas.width; 
+        const y = canvas.height - ((e-min)/range)*canvas.height*0.8;
+        i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y); 
       });
-      ctx.strokeStyle = '#FC4C02'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.strokeStyle = '#FC4C02'; 
+      ctx.lineWidth = 2; 
+      ctx.stroke();
     }
 
-    function drawPath() {
-      if(pathPolyline) pathLayer.removeLayer(pathPolyline);
-      if(trackingData.positions.length < 2) return;
-      const latlngs = trackingData.positions.map(p => [p.lat, p.lon]);
-      pathPolyline = L.polyline(latlngs, { color: '#FC4C02', weight: 4, opacity: 0.9, lineJoin: 'round', className: 'strava-path', dashArray: trackingData.pathVisible ? null : '10,10' });
-      pathLayer.addLayer(pathPolyline);
+    function drawPath(hikerName) {
+      if(!hikers[hikerName]) return;
+      const data = hikers[hikerName];
+      
+      if(pathLayers[hikerName]) {
+        map.removeLayer(pathLayers[hikerName]);
+      }
+      
+      if(data.positions.length < 2) return;
+      
+      const latlngs = data.positions.map(p => [p.lat, p.lon]);
+      const color = getHikerColor(hikerName);
+      const polyline = L.polyline(latlngs, { 
+        color: color, 
+        weight: 4, 
+        opacity: 0.9, 
+        lineJoin: 'round', 
+        className: 'strava-path'
+      });
+      
+      pathLayers[hikerName] = polyline;
+      if(activeHikerId === hikerName) {
+        polyline.addTo(map);
+      }
     }
 
-    // --- FIREBASE LISTENER (DARI ARDUINO) ---
-    const hikerRef = ref(db, 'hiker');
-    onValue(hikerRef, (snapshot) => {
-      const data = snapshot.val();
-      if(data) {
-        const lat = parseFloat(data.lat); const lon = parseFloat(data.lon);
+    function initializeHiker(hikerName) {
+      if(hikers[hikerName]) return;
+      
+      hikers[hikerName] = {
+        marker: null,
+        path: null,
+        history: [],
+        distance: 0,
+        startTime: new Date(),
+        lastPosition: null,
+        totalDistance: 0,
+        positions: [],
+        elevations: [],
+        totalElevationGain: 0,
+        minElevation: Infinity,
+        maxElevation: -Infinity,
+        targetDistance: 10
+      };
+      
+      // Update hiker selector dropdown
+      const select = document.getElementById('hiker-select');
+      const option = document.createElement('option');
+      option.value = hikerName;
+      option.textContent = hikerName.toUpperCase();
+      select.appendChild(option);
+      
+      // Jika ini pendaki pertama, set sebagai active
+      if(!activeHikerId) {
+        activeHikerId = hikerName;
+        select.value = hikerName;
+        document.getElementById('active-hiker-badge').style.display = 'inline-block';
+        updateDashboardStats(hikerName);
+      }
+    }
+
+    // --- FIREBASE LISTENER (MULTI-USER SUPPORT) ---
+    // Ubah ke /hikers (jamak) untuk mendeteksi semua pendaki
+    const hikersRef = ref(db, 'hikers');
+    onValue(hikersRef, (snapshot) => {
+      const allData = snapshot.val();
+      if(!allData) {
+        document.getElementById('connection-status').textContent = "Menunggu Data...";
+        document.querySelector('.connection-dot').style.backgroundColor = "#FF9800";
+        return;
+      }
+
+      // Iterasi semua pendaki dari Firebase
+      Object.keys(allData).forEach(hikerName => {
+        const data = allData[hikerName];
+        if(!data.lat || !data.lon) return;
         
-        if(!trackingData.startTime) {
-           trackingData.startTime = new Date();
-           document.getElementById('start-time').textContent = trackingData.startTime.toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'});
+        const lat = parseFloat(data.lat);
+        const lon = parseFloat(data.lon);
+        
+        // Inisialisasi pendaki jika belum ada
+        if(!hikers[hikerName]) {
+          initializeHiker(hikerName);
+        }
+        
+        const hikerData = hikers[hikerName];
+        
+        if(!hikerData.startTime) {
+          hikerData.startTime = new Date();
         }
         
         const el = getElevation(lat, lon);
-        trackingData.elevations.push(el);
-        trackingData.minElevation = Math.min(trackingData.minElevation, el);
-        trackingData.maxElevation = Math.max(trackingData.maxElevation, el);
+        hikerData.elevations.push(el);
+        hikerData.minElevation = Math.min(hikerData.minElevation, el);
+        hikerData.maxElevation = Math.max(hikerData.maxElevation, el);
         
-        if(trackingData.lastPosition) {
-           const dist = calculateDistance(trackingData.lastPosition.lat, trackingData.lastPosition.lon, lat, lon);
-           if(dist > 0.001) {
-             trackingData.totalDistance += dist;
-             const prevEl = trackingData.positions[trackingData.positions.length-1]?.elevation || el;
-             if(el > prevEl) trackingData.totalElevationGain += (el - prevEl);
-             trackingData.positions.push({lat, lon, elevation: el});
-             trackingData.lastPosition = {lat, lon};
-             drawPath();
-           }
+        if(hikerData.lastPosition) {
+          const dist = calculateDistance(hikerData.lastPosition.lat, hikerData.lastPosition.lon, lat, lon);
+          if(dist > 0.001) {
+            hikerData.totalDistance += dist;
+            const prevEl = hikerData.positions[hikerData.positions.length-1]?.elevation || el;
+            if(el > prevEl) hikerData.totalElevationGain += (el - prevEl);
+            hikerData.positions.push({lat, lon, elevation: el});
+            hikerData.lastPosition = {lat, lon};
+            drawPath(hikerName);
+          }
         } else {
-           trackingData.lastPosition = {lat, lon};
-           trackingData.positions.push({lat, lon, elevation: el});
+          hikerData.lastPosition = {lat, lon};
+          hikerData.positions.push({lat, lon, elevation: el});
         }
         
-        document.getElementById('position-val').textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-        updateDisplay();
-        
+        // Update marker untuk pendaki ini
         const newLatLng = [lat, lon];
-        if(!marker) {
-           marker = L.marker(newLatLng, {icon: stravaMarkerIcon}).addTo(markerLayer);
-           marker.bindPopup("<b>Pendaki SmartHiker</b><br>Tracking Aktif");
+        if(!hikerData.marker) {
+          hikerData.marker = L.marker(newLatLng, {icon: stravaMarkerIcon});
+          hikerData.marker.bindPopup(`<b>${hikerName.toUpperCase()}</b><br>Tracking Aktif`);
+          if(activeHikerId === hikerName) {
+            hikerData.marker.addTo(map);
+          }
         } else {
-           marker.setLatLng(newLatLng);
+          hikerData.marker.setLatLng(newLatLng);
         }
-        if(trackingData.positions.length % 5 === 0) map.panTo(newLatLng);
         
+        // Update dashboard jika pendaki ini adalah yang aktif
+        if(activeHikerId === hikerName) {
+          updateDashboardStats(hikerName);
+          if(hikerData.positions.length % 5 === 0) map.panTo(newLatLng);
+        }
+        
+        // Update status koneksi
         document.getElementById('connection-status').textContent = "Aktif";
         document.querySelector('.connection-dot').style.backgroundColor = "#4CAF50";
+      });
+    });
+
+    // --- HIKER SELECTOR EVENT ---
+    document.getElementById('hiker-select').addEventListener('change', function(e) {
+      const selectedHiker = this.value;
+      if(!selectedHiker) return;
+      
+      // Hapus marker dan path dari pendaki sebelumnya
+      if(activeHikerId && hikers[activeHikerId]) {
+        if(hikers[activeHikerId].marker) map.removeLayer(hikers[activeHikerId].marker);
+        if(pathLayers[activeHikerId]) map.removeLayer(pathLayers[activeHikerId]);
+      }
+      
+      // Set pendaki baru sebagai active
+      activeHikerId = selectedHiker;
+      
+      // Tambah marker dan path untuk pendaki baru ke map
+      if(hikers[selectedHiker]) {
+        if(hikers[selectedHiker].marker) hikers[selectedHiker].marker.addTo(map);
+        if(pathLayers[selectedHiker]) pathLayers[selectedHiker].addTo(map);
+        
+        // Update dashboard
+        updateDashboardStats(selectedHiker);
+        
+        // Pan ke lokasi pendaki
+        if(hikers[selectedHiker].lastPosition) {
+          map.panTo([hikers[selectedHiker].lastPosition.lat, hikers[selectedHiker].lastPosition.lon]);
+        }
       }
     });
 
     // --- CONTROLS & EVENTS ---
-    document.getElementById('toggle-path').onclick = function() { trackingData.pathVisible = !trackingData.pathVisible; this.classList.toggle('active'); drawPath(); };
-    document.getElementById('toggle-elevation').onclick = function() { document.querySelector('.elevation-panel').style.display = (trackingData.elevationVisible = !trackingData.elevationVisible) ? 'block' : 'none'; this.classList.toggle('active'); };
-    document.getElementById('toggle-marker').onclick = function() { trackingData.markerVisible = !trackingData.markerVisible; this.classList.toggle('active'); trackingData.markerVisible ? markerLayer.addTo(map) : markerLayer.remove(); };
-    document.getElementById('toggle-fullscreen').onclick = function() { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); };
+    let pathVisible = true;
+    let markerVisible = true;
+    let elevationVisible = true;
+
+    document.getElementById('toggle-path').onclick = function() { 
+      pathVisible = !pathVisible; 
+      this.classList.toggle('active'); 
+      if(activeHikerId && pathLayers[activeHikerId]) {
+        if(pathVisible) pathLayers[activeHikerId].addTo(map);
+        else map.removeLayer(pathLayers[activeHikerId]);
+      }
+    };
+
+    document.getElementById('toggle-elevation').onclick = function() { 
+      elevationVisible = !elevationVisible;
+      document.querySelector('.elevation-panel').style.display = elevationVisible ? 'block' : 'none'; 
+      this.classList.toggle('active'); 
+    };
+
+    document.getElementById('toggle-marker').onclick = function() { 
+      markerVisible = !markerVisible; 
+      this.classList.toggle('active'); 
+      if(activeHikerId && hikers[activeHikerId] && hikers[activeHikerId].marker) {
+        if(markerVisible) hikers[activeHikerId].marker.addTo(map);
+        else map.removeLayer(hikers[activeHikerId].marker);
+      }
+    };
+
+    document.getElementById('toggle-fullscreen').onclick = function() { 
+      document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); 
+    };
     
     // Auto Update Timer
-    setInterval(updateDisplay, 1000);
+    setInterval(() => {
+      if(activeHikerId && hikers[activeHikerId]) {
+        updateDashboardStats(activeHikerId);
+      }
+    }, 1000);
     
-    // SIMULASI DATA (JIKA BELUM ADA ALAT) - Hapus bagian ini jika alat sudah ready
-    setTimeout(() => {
-       if(!trackingData.startTime) {
-         console.log("Simulasi Demo Start...");
-         trackingData.startTime = new Date();
-         let sLat = -7.5; let sLon = 110.5;
-         setInterval(() => {
-            sLat += (Math.random()-0.3)*0.001; sLon += (Math.random()-0.3)*0.001;
-            // Kita inject seolah-olah firebase update (hanya visual di browser, tidak kirim ke DB)
-            // Hapus simulasi ini nanti
-         }, 3000);
-       }
-    }, 5000);
+    // Deteksi perubahan status koneksi
+    window.addEventListener('online', () => {
+      console.log("Back Online");
+      document.getElementById('connection-status').textContent = "Online - Peta Streaming";
+    });
+
+    window.addEventListener('offline', () => {
+      console.log("Offline Mode");
+      document.getElementById('connection-status').textContent = "Offline - Peta Lokal";
+      document.querySelector('.connection-dot').style.backgroundColor = "#FF9800";
+    });
   </script>
 </body>
 </html>
