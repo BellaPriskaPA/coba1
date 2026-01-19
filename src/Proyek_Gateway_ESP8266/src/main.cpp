@@ -4,8 +4,8 @@
 #include <SPI.h>
 
 // Config Wi-Fi & Firebase dari HTML Anda
-#define WIFI_SSID "NAMA_WIFI"
-#define WIFI_PASSWORD "PASS_WIFI"
+#define WIFI_SSID "April"
+#define WIFI_PASSWORD "gembulelek"
 #define API_KEY "AIzaSyAFUXPpKxImJKhhm5MjQULk9dxFSzrpNIE"
 #define DATABASE_URL "https://smarthiker-default-rtdb.asia-southeast1.firebasedatabase.app"
 
